@@ -319,4 +319,247 @@ Let me know if you need a Job YAML for schema migrations or further clarificatio
 
 
 
+---------------
+
+To deploy your Spring Boot JPA application to a Kubernetes test platform, with a ConfigMap for the application properties, a mounted folder for test data, and the application packaged as a JAR, follow these steps:
+
+
+Step 1: Package the Application
+
+	1.	Ensure the Application Runs Locally
+Verify that the application.properties file works locally:
+
+mvn clean package
+
+
+This generates a JAR file in the target directory.
+
+	2.	Create a Dockerfile
+Add the following Dockerfile to the root of your project:
+
+
+FROM openjdk:17-jdk-slim
+VOLUME /tmp
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+WORKDIR /test-data # Directory for test data
+ENTRYPOINT ["java", "-jar", "/app.jar"]
+
+
+
+	3.	Build the Docker Image
+
+docker build -t springboot-k8s-test:1.0 .
+
+
+	4.	Push the Docker Image to a Registry
+
+
+docker tag springboot-k8s-test:1.0 <your-dockerhub-username>/springboot-k8s-test:1.0
+docker push <your-dockerhub-username>/springboot-k8s-test:1.0
+
+
+Step 2: Kubernetes Configuration
+
+2.1 ConfigMap for application.properties
+
+Create a configmap.yaml file to store your application properties as a ConfigMap:
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: springboot-test-config
+data:
+  application.properties: |
+    test.appkey=nims-mb-cachetest_123
+    test.appname=nims-mb-cachetest
+    test.authserver=nimbus-authorization-server
+    test.localdirectory=/tmp/test-data/
+    test.pitusername=MKondal
+    test.pitpassword=<secret-password>
+    spring.datasource.url=jdbc:db2://db2nimbus.svc.ny.gov:4118/NIMTOLDV
+    spring.datasource.username=maddevnp
+    spring.datasource.password=Rd8?np@x
+    spring.datasource.driver-class-name=com.ibm.db2.jcc.DB2Driver
+    spring.jpa.hibernate.ddl-auto=validate
+    spring.jpa.properties.hibernate.default_schema=NIMBUS
+    logging.level.org.hibernate.SQL=DEBUG
+    logging.level.org.hibernate.type.descriptor.sql.BasicBinder=TRACE
+
+
+2.2 Secret for Sensitive Data
+
+Since sensitive information like spring.datasource.password is present, store it in a Kubernetes Secret:
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+data:
+  username: bWFkZGV2bnA=  # Base64-encoded "maddevnp"
+  password: UmQ4P25wQHg=  # Base64-encoded "Rd8?np@x"
+
+
+Encode the values:
+
+echo -n "maddevnp" | base64
+echo -n "Rd8?np@x" | base64
+
+Update the ConfigMap to reference these secrets (if not hardcoded).
+
+2.3 Deployment YAML
+
+Create a deployment.yaml file to deploy the application as a pod:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: springboot-test
+  labels:
+    app: springboot-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: springboot-test
+  template:
+    metadata:
+      labels:
+        app: springboot-test
+    spec:
+      containers:
+      - name: springboot-test
+        image: <your-dockerhub-username>/springboot-k8s-test:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        # Mount database credentials
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: username
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+        # Mount ConfigMap as environment variable
+        envFrom:
+        - configMapRef:
+            name: springboot-test-config
+        # Mount test data directory
+        volumeMounts:
+        - name: test-data-volume
+          mountPath: /test-data
+      volumes:
+      - name: test-data-volume
+        hostPath:
+          path: /tmp/test-data # Local directory to copy test data
+          type: Directory
+
+
+2.4 Service YAML
+
+Expose the application with a ClusterIP service for internal access or LoadBalancer for external access:
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: springboot-test-service
+spec:
+  selector:
+    app: springboot-test
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+
+Step 3: Apply Kubernetes Resources
+
+	1.	Apply the ConfigMap:
+
+
+kubectl apply -f configmap.yaml
+
+
+	2.	Apply the Secret:
+
+kubectl apply -f secret.yaml
+
+
+	3.	Apply the Deployment:
+
+kubectl apply -f deployment.yaml
+
+
+	4.	Apply the Service:
+
+kubectl apply -f service.yaml
+
+
+Step 4: Verify Deployment
+
+	1.	Check Pod Status:
+
+kubectl get pods
+
+Ensure the pod is running.
+
+	2.	Check Logs:
+
+kubectl logs <pod-name>
+
+Verify that the application started successfully.
+
+	3.	Access the Application:
+	•	If using ClusterIP, you can use port forwarding:
+
+kubectl port-forward <pod-name> 8080:8080
+
+
+Then access http://localhost:8080.
+
+	•	If using LoadBalancer, get the external IP:
+
+kubectl get svc
+
+Step 5: Validate Test Data
+
+Ensure that the /test-data directory is populated with required files before deploying:
+	1.	Copy the files to the test folder:
+
+
+mkdir -p /tmp/test-data
+cp -r <your-test-data-files> /tmp/test-data/
+
+
+
+	2.	Verify the pod has access to this directory during runtime.
+
+Step 6: Clean Up
+
+After testing, you can delete the resources:
+
+kubectl delete deployment springboot-test
+kubectl delete svc springboot-test-service
+kubectl delete configmap springboot-test-config
+kubectl delete secret db-credentials
+
+
+Summary
+
+	1.	ConfigMap is used to store the application.properties.
+	2.	Secrets securely store sensitive credentials.
+	3.	The test data folder is mounted as a volume.
+	4.	The app is packaged into a Docker container, deployed as a Kubernetes pod, and exposed via a service.
+
+This ensures the application runs smoothly in the Kubernetes test environment. Let me know if you need further assistance!
+
+
 
